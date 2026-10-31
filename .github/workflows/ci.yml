@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Conn3x
+        env: &gh
+          GH_TOKEN: ${{ github.token }}
+        run: &install |
+          tag=$(gh release view -R conn3xorg/conn3x --json tagName -q .tagName)
+          file="conn3x_${tag#v}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/$file"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          mkdir -p bin && tar -xzf "$file" -C bin conn3x
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: conn3x version
+      - run: conn3x fmt -check -recursive
+      - name: Validate
+        run: conn3x init -backend=false && conn3x validate
+      - name: Validate the example
+        working-directory: examples/local
+        run: conn3x init -backend=false && conn3x validate
+      - name: Validate the cluster test
+        working-directory: test/cluster
+        run: conn3x init -backend=false && conn3x validate
+      - name: Check an even number of servers is refused
+        working-directory: test/even-servers
+        run: |
+          conn3x init -backend=false
+          if conn3x validate >output.txt 2>&1; then exit 1; fi
+          grep -q 'odd number of servers' output.txt
+
+  e2e:
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [rocky10, fedora45, ubuntu2404, debian13]
+    name: e2e (${{ matrix.distro }})
+    env:
+      # The client runs jobs in cgroups of its own, so the hosts are privileged.
+      PODMAN: sudo podman
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The test host images live in the Conn3x repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: conn3xorg/conn3x
+          ref: main
+          path: conn3x
+          persist-credentials: false
+          sparse-checkout: test/images
+      - name: Install Conn3x
+        env: *gh
+        run: *install
+      - name: Start the ${{ matrix.distro }} hosts
+        working-directory: examples/local
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/${{ matrix.distro }}/Containerfile
+        run: ./up.sh
+      - name: Apply, then plan again with no changes
+        working-directory: examples/local
+        run: |
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+      - name: Check the key stayed out of state
+        working-directory: examples/local
+        run: "! grep -q Yo8Lxr3Qk0V8 terraform.tfstate"
+      - name: Check the cluster forms and a client runs a job
+        run: |
+          sudo podman cp test/check-job.sh circuit-nomad-server:/tmp/check-job.sh
+          sudo podman exec -i circuit-nomad-server sh /tmp/check-job.sh 1 1 < examples/local/hello.nomad.hcl
+      - name: Show the Nomad logs
+        if: failure()
+        run: for role in server client; do sudo podman exec circuit-nomad-$role journalctl -u nomad --no-pager -n 100 || true; done
+      - name: Clean up
+        if: always()
+        working-directory: examples/local
+        run: ./down.sh
+
+  cluster:
+    needs: validate
+    runs-on: ubuntu-24.04
+    name: cluster (3 servers, 1 client)
+    env:
+      PODMAN: sudo podman
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: conn3xorg/conn3x
+          ref: main
+          path: conn3x
+          persist-credentials: false
+          sparse-checkout: test/images
+      - name: Install Conn3x
+        env: *gh
+        run: *install
+      # up.sh starts a server and a client from each call, so two calls give
+      # four hosts, and the second call's server stands in for a third server.
+      - name: Start four Ubuntu 24.04 hosts
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/ubuntu2404/Containerfile
+        run: |
+          : > test/cluster/known_hosts
+          : > ids
+          for n in 1 2; do
+            NAME=nomad$n PORT=222$((n * 2 - 1)) examples/local/up.sh
+            cat examples/local/known_hosts >> test/cluster/known_hosts
+            cat examples/local/container_ids >> ids
+          done
+          cp examples/local/id_ed25519 test/cluster/
+          {
+            echo "TF_VAR_join_addresses=[\"$(sudo podman inspect -f '{{.NetworkSettings.IPAddress}}' nomad1-server)\",\"$(sudo podman inspect -f '{{.NetworkSettings.IPAddress}}' nomad1-client)\",\"$(sudo podman inspect -f '{{.NetworkSettings.IPAddress}}' nomad2-server)\"]"
+          } >> "$GITHUB_ENV"
+      - name: Apply, then plan again with no changes
+        working-directory: test/cluster
+        run: |
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+      - name: Check the cluster forms and a client runs a job
+        run: |
+          sudo podman cp test/check-job.sh nomad1-server:/tmp/check-job.sh
+          sudo podman exec -i nomad1-server sh /tmp/check-job.sh 3 1 < examples/local/hello.nomad.hcl
+      - name: Show the Nomad logs
+        if: failure()
+        run: for c in nomad1-server nomad1-client nomad2-server nomad2-client; do sudo podman exec $c journalctl -u nomad --no-pager -n 100 || true; done
+      - name: Clean up
+        if: always()
+        run: if [ -f ids ]; then while read -r id; do sudo podman stop "$id" || true; done < ids; fi
