@@ -126,7 +126,7 @@ jobs:
           : > test/cluster/known_hosts
           : > ids
           for n in 1 2; do
-            NAME=nomad$n PORT=222$((n * 2 - 1)) examples/local/up.sh
+            CONTAINER_NAME=nomad$n PORT=222$((n * 2 - 1)) examples/local/up.sh
             cat examples/local/known_hosts >> test/cluster/known_hosts
             cat examples/local/container_ids >> ids
           done
