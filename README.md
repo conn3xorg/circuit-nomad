@@ -25,7 +25,7 @@ If you need an open source licence today, this circuit isn't the way to get one.
 
 ```hcl
 module "nomad" {
-  source = "github.com/conn3xorg/circuit-nomad?ref=v0.1.0"
+  source = "github.com/conn3xorg/circuit-nomad?ref=v0.1.1"
 
   servers = {
     server1 = { address = "203.0.113.10", advertise = "10.0.0.10" }
