@@ -25,7 +25,7 @@ If you need an open source licence today, this circuit isn't the way to get one.
 
 ```hcl
 module "nomad" {
-  source = "github.com/conn3xorg/circuit-nomad?ref=v0.1.1"
+  source = "github.com/conn3xorg/circuit-nomad?ref=v0.1.2"
 
   servers = {
     server1 = { address = "203.0.113.10", advertise = "10.0.0.10" }
@@ -147,7 +147,7 @@ Requires Conn3x v0.6.10 or later, systemd on each host, and outbound HTTPS to `r
 
 ## Tested on
 
-Rocky Linux 10, Fedora 45, Ubuntu 24.04 and Debian 13. CI applies [examples/local](examples/local) to a server and a client of each, checks that the second plan has no changes and that the gossip key stayed out of state, then bootstraps ACLs, checks an anonymous request gets a 403, runs [hello.nomad.hcl](examples/local/hello.nomad.hcl) with the `exec` driver and reads the job's output back from the client. A second CI job does the same with three servers and a client, and a third checks that an even number of servers is refused. Those runs were also done by hand in containers on arm64.
+Rocky Linux 10, Fedora 45, Ubuntu 24.04 and Debian 13. CI applies [examples/local](examples/local) to a server and a client of each, checks that the second plan has no changes and that the gossip key stayed out of state, then bootstraps ACLs, checks an anonymous request gets a 403, runs [hello.nomad.hcl](examples/local/hello.nomad.hcl) with the `exec` driver and reads the job's output back from the client. It then restarts Nomad on both, checks the server leads again and still refuses anonymous requests, that the client reports healthy, and that the plan has no changes. A second CI job does the same with three servers and a client, and a third checks that an even number of servers is refused. Those runs were also done by hand in containers on arm64.
 
 The same check passed on five droplets on a private network: servers on Ubuntu 24.04, Rocky Linux 10 and Debian 13, clients on Ubuntu 24.04 and Rocky Linux 10, with `advertise` set. SELinux was enforcing on the Rocky hosts, with no denials for Nomad. After rebooting two of the servers and a client, one at a time, the cluster had three peers and a leader, and the plan stayed clean. Changing `nomad_version` replaced the binary everywhere and the second plan was clean; that was tried between 2.1.1 and 2.1.0, both ways, not on a real upgrade across minor versions. Fedora 45 wasn't available as a droplet, so it has only run in containers, with SELinux off.
 
