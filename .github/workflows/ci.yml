@@ -89,6 +89,23 @@ jobs:
         run: |
           sudo podman cp test/check-job.sh circuit-nomad-server:/tmp/check-job.sh
           sudo podman exec -i circuit-nomad-server sh /tmp/check-job.sh 1 1 < examples/local/hello.nomad.hcl
+      # Both agents come back from the config on disk: the server leads
+      # again and still refuses anonymous requests, and the client finds it.
+      - name: Restart Nomad, then check the server leads and the client rejoins
+        working-directory: examples/local
+        run: |
+          for role in server client; do sudo podman exec circuit-nomad-$role systemctl restart nomad; done
+          sudo podman exec -i circuit-nomad-server sh -eu <<'EOF'
+          for _ in $(seq 60); do curl -sf http://127.0.0.1:4646/v1/status/leader | grep -q : && break; sleep 2; done
+          curl -sf http://127.0.0.1:4646/v1/status/leader | grep -q :
+          [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4646/v1/jobs)" = 403 ]
+          EOF
+          sudo podman exec -i circuit-nomad-client sh -eu <<'EOF'
+          for _ in $(seq 60); do curl -sf 'http://127.0.0.1:4646/v1/agent/health?type=client' | grep -q '"ok":true' && exit 0; sleep 2; done
+          curl -sS 'http://127.0.0.1:4646/v1/agent/health?type=client'
+          exit 1
+          EOF
+          conn3x plan -detailed-exitcode
       - name: Show the Nomad logs
         if: failure()
         run: for role in server client; do sudo podman exec circuit-nomad-$role journalctl -u nomad --no-pager -n 100 || true; done
